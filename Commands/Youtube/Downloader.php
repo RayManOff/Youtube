@@ -9,6 +9,9 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
+/**
+ * @author Gadel Raymanov <raymanovg@gmail.com>
+ */
 class Downloader
     extends Command
 {
@@ -49,9 +52,6 @@ class Downloader
         }
 
         $this->loop->run();
-
-        echo str_repeat("\n", count($this->requests));
-
         $this->runRequests();
     }
 
@@ -116,6 +116,7 @@ class Downloader
         $currentSize = 0;
 
         $progress = new \React\Stream\ThroughStream();
+        echo "\n";
         $progress->on('data', function($data) use ($size, &$currentSize, $fileName, $position){
             $currentSize += strlen($data);
             echo str_repeat("\033[1A", $position),
