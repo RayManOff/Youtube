@@ -3,6 +3,7 @@
 namespace Commands\Youtube;
 
 use React\EventLoop\Factory;
+use React\EventLoop\LoopInterface;
 use React\HttpClient\Client;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -15,7 +16,13 @@ use Symfony\Component\Console\Output\OutputInterface;
 class Downloader
     extends Command
 {
+    /**
+     * @var LoopInterface
+     */
     protected $loop;
+    /**
+     * @var Client
+     */
     protected $client;
     protected $requests = [];
 
@@ -43,7 +50,6 @@ class Downloader
 
         $this->download($videoIds);
     }
-
 
     public function download(array $videoIds)
     {
