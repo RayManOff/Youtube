@@ -42,7 +42,7 @@ class Downloader
     }
 
 
-    public function download(array $videoIds): array
+    public function download(array $videoIds)
     {
         foreach ($videoIds as $index => $videoId) {
             $this->init($videoId, $index + 1);
@@ -50,15 +50,9 @@ class Downloader
 
         $this->loop->run();
 
-        for (;;) {
-            sleep(1);
-            var_dump(count($this->requests));
-        }
         echo str_repeat("\n", count($this->requests));
 
-//        $this->runRequests();
-
-        return [];
+        $this->runRequests();
     }
 
 
