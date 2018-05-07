@@ -27,7 +27,7 @@ class Downloader
     protected $requests = [];
 
     protected $videoInfoUrlPattern = 'https://www.youtube.com/get_video_info?video_id=%s';
-    protected $videoFilePattern = '/home/rayman/Videos/%s.mp4';
+    protected $videoFilePattern = '/home/gadel/Videos/%s.mp4';
 
     protected function configure()
     {
@@ -39,7 +39,7 @@ class Downloader
     protected function execute(InputInterface $input, OutputInterface $output)
     {
         $videoIds = $input->getOption('video_ids');
-        if (strpos($videoIds, ',') !== false) {
+        if (strpos($videoIds, ',') === false) {
             $videoIds = (array) $videoIds;
         } else {
             $videoIds = explode(',', $videoIds);
@@ -56,19 +56,6 @@ class Downloader
         foreach ($videoIds as $index => $videoId) {
             $this->init($videoId, $index + 1);
         }
-
-        $this->loop->run();
-        $this->runRequests();
-    }
-
-
-    protected function runRequests()
-    {
-        foreach ($this->requests as $request) {
-            $request->end();
-        }
-
-        $this->requests = [];
 
         $this->loop->run();
     }
@@ -104,7 +91,7 @@ class Downloader
                     $response->pipe($progress)->pipe($videoFile);
                 });
 
-                $this->requests[] = $request;
+                $request->end();
             }
         });
 
@@ -126,15 +113,14 @@ class Downloader
         $progress->on('data', function($data) use ($size, &$currentSize, $fileName, $position){
             $currentSize += strlen($data);
             echo str_repeat("\033[1A", $position),
-            "$fileName: ", number_format($currentSize / $size * 100), "%",
+            "$fileName: ", number_format($currentSize / $size * 100), '%',
             str_repeat("\n", $position);
         });
 
         return $progress;
     }
 
-
-    protected function parseVideoInfo(string $videoInfoFileContent)
+    protected function parseVideoInfo($videoInfoFileContent)
     {
         parse_str($videoInfoFileContent, $fileInfo);
         $info = json_decode(json_encode($fileInfo), true);
