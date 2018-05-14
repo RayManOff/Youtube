@@ -2,6 +2,8 @@
 
 namespace Commands\Youtube;
 
+use Clue\React\Stdio\Stdio;
+use Libs\Youtube\YoutubeException;
 use React\EventLoop\Factory;
 use React\EventLoop\LoopInterface;
 use React\HttpClient\Client;
@@ -27,18 +29,33 @@ class Downloader
     protected $requests = [];
 
     protected $videoInfoUrlPattern = 'https://www.youtube.com/get_video_info?video_id=%s';
-    protected $videoFilePattern = '/home/gadel/Videos/%s.mp4';
+    protected $videoFilePattern = __DIR__ . '/Videos/%s';
 
     protected function configure()
     {
         $this->setName('youtube:downloader');
         $this->setDescription('Downloader video form youtube');
-        $this->addOption('video_ids', null, InputOption::VALUE_REQUIRED);
+        $this->addOption('video_ids', 'ids', InputOption::VALUE_REQUIRED);
+        $this->addOption('path', null, InputOption::VALUE_REQUIRED);
     }
 
     protected function execute(InputInterface $input, OutputInterface $output)
     {
         $videoIds = $input->getOption('video_ids');
+        if ($videoIds === null) {
+            error_log('Video ids are required');
+
+            return;
+        }
+
+        $path = $input->getOption('path');
+        if ($path !== null) {
+            if (strpos($path, '/', -1) === false) {
+                $path = $path . '/';
+            }
+            $this->videoFilePattern = $path . '%s';
+        }
+
         if (strpos($videoIds, ',') === false) {
             $videoIds = (array) $videoIds;
         } else {
@@ -48,10 +65,10 @@ class Downloader
         $this->loop = Factory::create();
         $this->client = new Client($this->loop);
 
-        $this->download($videoIds);
+        $this->handle($videoIds);
     }
 
-    public function download(array $videoIds)
+    public function handle(array $videoIds)
     {
         foreach ($videoIds as $index => $videoId) {
             $this->init($videoId, $index + 1);
@@ -64,7 +81,7 @@ class Downloader
     {
         $url = sprintf($this->videoInfoUrlPattern, $videoId);
         $videoInfo = new \React\Stream\ThroughStream();
-        $request = $this->client->request('GET', $url /*, [CURLOPT_COOKIEFILE => '', CURLOPT_COOKIEJAR => '']*/);
+        $request = $this->client->request('GET', $url);
         $request->on('response', function (\React\HttpClient\Response $response) use ($videoInfo) {
             $response->on('end', function () use ($videoInfo) {
                 $videoInfo->emit('done');
@@ -79,23 +96,71 @@ class Downloader
         });
 
         $videoInfo->on('done', function () use (&$infoContent, $position) {
-            $videoInfo = $this->parseVideoInfo($infoContent);
-            if ($videoInfo !== false) {
-                $fileName = sprintf($this->videoFilePattern, $videoInfo['title']);
-                $url = $videoInfo['types'][0]['url'];
-                $videoFile = new \React\Stream\WritableResourceStream(fopen($fileName, 'w'), $this->loop);
-                $request = $this->client->request('GET', $url);
-                $request->on('response', function (\React\HttpClient\Response $response) use ($videoFile, $videoInfo, $position) {
-                    $size = $response->getHeaders()['Content-Length'];
-                    $progress = $this->makeProgressStream($size, $videoInfo['title'], $position);
-                    $response->pipe($progress)->pipe($videoFile);
-                });
+            $videoType = new \React\Stream\ThroughStream();
+            $videoType->on('data', function ($videoType) use ($position) {
+                try {
+                    $this->download($videoType, $position);
+                } catch (\Exception $e) {
+                    error_log($e->getMessage());
+                }
+            });
 
-                $request->end();
+            try {
+                $this->chooseVideoType($videoType, $this->parseVideoInfo($infoContent));
+            } catch (\Exception $e) {
+                $videoType->end();
             }
         });
 
         $request->end();
+    }
+
+    protected function download(array $videoInfo, int $videoCount)
+    {
+        $fileName =  $videoInfo['title'] . '.' . $videoInfo['format'];
+        $filePath = sprintf($this->videoFilePattern, $fileName);
+        $videoFile = new \React\Stream\WritableResourceStream(fopen($filePath, 'w'), $this->loop);
+        $request = $this->client->request('GET', $videoInfo['url']);
+        $request->on('response', function (\React\HttpClient\Response $response) use ($videoFile, $videoInfo, $videoCount) {
+            $size = $response->getHeaders()['Content-Length'];
+            $progress = $this->makeProgressStream($size, $videoInfo['title'], $videoCount);
+            $response->pipe($progress)->pipe($videoFile);
+        });
+
+        $request->end();
+    }
+
+    protected function chooseVideoType($videoType, array $videoInfo)
+    {
+        $stdio = new Stdio($this->loop);
+        $message = "Choose format for {$videoInfo['title']} : \n";
+        foreach ($videoInfo['types'] as $index => $type) {
+            $index++;
+            $message .= ("{$index}) ");
+            list(, $format) = explode('/', $type['type']);
+            $message .= "{$type['quality']} {$format} \n";
+        }
+
+        $stdio->getReadline()->setPrompt($message);
+        $stdio->on('data', function ($line) use ($stdio, $videoInfo, $videoType) {
+            $index = (int) trim($line);
+            if (!isset($videoInfo['types'][--$index])) {
+                $stdio->write("Unexpected format. Please choose again... \n");
+
+                return;
+            }
+
+            list(, $format) = explode('/', $videoInfo['types'][$index]['type']);
+
+            $videoInfoForDownload = [
+                'title' => $videoInfo['title'],
+                'url' => $videoInfo['types'][$index]['url'],
+                'format' => $format
+            ];
+
+            $videoType->emit('data', [$videoInfoForDownload]);
+            $stdio->end();
+        });
     }
 
     /**
@@ -120,12 +185,17 @@ class Downloader
         return $progress;
     }
 
-    protected function parseVideoInfo($videoInfoFileContent)
+    /**
+     * @param $videoInfoFileContent
+     * @return array
+     * @throws YoutubeException
+     */
+    protected function parseVideoInfo($videoInfoFileContent) : array
     {
         parse_str($videoInfoFileContent, $fileInfo);
         $info = json_decode(json_encode($fileInfo), true);
         if (!isset($info['url_encoded_fmt_stream_map'], $info['title'])) {
-            return false;
+            throw new YoutubeException('Cannot get video info');
         }
 
         $videoInfo = [
@@ -135,10 +205,6 @@ class Downloader
 
         foreach (explode(',', $info['url_encoded_fmt_stream_map']) as $typeInfo) {
             parse_str($typeInfo, $info);
-            if (!isset($info['quality']) || $info['quality'] !== 'hd720') {
-                continue;
-            }
-
             $videoInfo['types'][] = [
                 'quality' => $info['quality'],
                 'type' => explode(';', $info['type'])[0],
