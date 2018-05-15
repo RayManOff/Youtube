@@ -98,11 +98,7 @@ class Downloader
         $videoInfo->on('done', function () use (&$infoContent, $position) {
             $videoType = new \React\Stream\ThroughStream();
             $videoType->on('data', function ($videoType) use ($position) {
-                try {
-                    $this->download($videoType, $position);
-                } catch (\Exception $e) {
-                    error_log($e->getMessage());
-                }
+                $this->download($videoType, $position);
             });
 
             try {
@@ -128,6 +124,11 @@ class Downloader
         });
 
         $request->end();
+
+        /**
+         * TODO Delete this loop run
+         */
+        $this->loop->run();
     }
 
     protected function chooseVideoType($videoType, array $videoInfo)
