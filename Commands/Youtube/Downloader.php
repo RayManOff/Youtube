@@ -105,6 +105,10 @@ class Downloader
 
                 return;
             }
+
+            /**
+             * TODO videos is not downloaded parallel
+             */
             $stdio = new Stdio($this->loop);
             $message = "Choose format for {$videoInfo['title']} : \n";
             foreach ($videoInfo['types'] as $index => $type) {
