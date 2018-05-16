@@ -27,6 +27,7 @@ class Downloader
      */
     protected $client;
     protected $requests = [];
+    protected $highQuality = false;
 
     protected $videoInfoUrlPattern = 'https://www.youtube.com/get_video_info?video_id=%s';
     protected $videoFilePattern = __DIR__ . '/Videos/%s';
@@ -35,12 +36,14 @@ class Downloader
     {
         $this->setName('youtube:downloader');
         $this->setDescription('Downloader video form youtube');
-        $this->addOption('video_ids', 'ids', InputOption::VALUE_REQUIRED);
+        $this->addOption('video_ids', null, InputOption::VALUE_REQUIRED);
+        $this->addOption('high_quality', null, InputOption::VALUE_REQUIRED);
         $this->addOption('path', null, InputOption::VALUE_REQUIRED);
     }
 
     protected function execute(InputInterface $input, OutputInterface $output)
     {
+        $this->highQuality = (bool) $input->getOption('high_quality');
         $videoIds = $input->getOption('video_ids');
         if ($videoIds === null) {
             error_log('Video ids are required');
@@ -84,7 +87,7 @@ class Downloader
         $request = $this->client->request('GET', $url);
         $request->on('response', function (\React\HttpClient\Response $response) use ($videoInfo) {
             $response->on('end', function () use ($videoInfo) {
-                $videoInfo->emit('done');
+                $videoInfo->close();
             });
 
             $response->pipe($videoInfo);
@@ -95,20 +98,76 @@ class Downloader
             $infoContent .= $data;
         });
 
-        $videoInfo->on('done', function () use (&$infoContent, $position) {
-            $videoType = new \React\Stream\ThroughStream();
-            $videoType->on('data', function ($videoType) use ($position) {
-                $this->download($videoType, $position);
-            });
+        $videoInfo->on('close', function () use (&$infoContent, $videoInfo, $position) {
+            $videoInfo = $this->parseVideoInfo($infoContent);
+            if ($this->highQuality) {
+                $this->download($this->getHighQualityVideo($videoInfo), $position);
 
-            try {
-                $this->chooseVideoType($videoType, $this->parseVideoInfo($infoContent));
-            } catch (\Exception $e) {
-                $videoType->end();
+                return;
             }
+            $stdio = new Stdio($this->loop);
+            $message = "Choose format for {$videoInfo['title']} : \n";
+            foreach ($videoInfo['types'] as $index => $type) {
+                $index++;
+                $message .= "{$index}) ";
+                list(, $format) = explode('/', $type['type']);
+                $message .= "{$type['quality']} {$format} \n";
+            }
+
+            $stdio->getReadline()->setPrompt($message);
+            $stdio->getReadline()->setPrompt('');
+            $stdio->on('data', function ($line) use ($stdio, $videoInfo, $position) {
+                $index = (int) trim($line);
+
+                if (!isset($videoInfo['types'][--$index])) {
+                    $stdio->write("\n Unexpected format. Please choose again... \n");
+
+                    return;
+                }
+
+                list(, $format) = explode('/', $videoInfo['types'][$index]['type']);
+
+                $videoInfoForDownload = [
+                    'title' => $videoInfo['title'],
+                    'url' => $videoInfo['types'][$index]['url'],
+                    'format' => $format
+                ];
+
+                $this->download($videoInfoForDownload, $position);
+
+                /**
+                 * TODO if this method is called video is not downloaded
+                 */
+                $stdio->end();
+            });
         });
 
         $request->end();
+    }
+
+    protected function getHighQualityVideo(array $videoInfo) : array
+    {
+        static $qualityTypes = [
+            'hd720',
+            'medium',
+            'small'
+        ];
+
+        $highQualityVideo = null;
+        foreach ($qualityTypes as $quality) {
+            foreach ($videoInfo['types'] as $type) {
+                if ($type['quality'] === $quality) {
+                    $highQualityVideo = [
+                        'title' => $videoInfo['title'],
+                        'url' => $type['url'],
+                        'format' => explode('/', $type['type'])[1]
+                    ];
+                    break 2;
+                }
+            }
+        }
+
+        return $highQualityVideo;
     }
 
     protected function download(array $videoInfo, int $videoCount)
@@ -124,44 +183,6 @@ class Downloader
         });
 
         $request->end();
-
-        /**
-         * TODO Delete this loop run
-         */
-        $this->loop->run();
-    }
-
-    protected function chooseVideoType($videoType, array $videoInfo)
-    {
-        $stdio = new Stdio($this->loop);
-        $message = "Choose format for {$videoInfo['title']} : \n";
-        foreach ($videoInfo['types'] as $index => $type) {
-            $index++;
-            $message .= ("{$index}) ");
-            list(, $format) = explode('/', $type['type']);
-            $message .= "{$type['quality']} {$format} \n";
-        }
-
-        $stdio->getReadline()->setPrompt($message);
-        $stdio->on('data', function ($line) use ($stdio, $videoInfo, $videoType) {
-            $index = (int) trim($line);
-            if (!isset($videoInfo['types'][--$index])) {
-                $stdio->write("Unexpected format. Please choose again... \n");
-
-                return;
-            }
-
-            list(, $format) = explode('/', $videoInfo['types'][$index]['type']);
-
-            $videoInfoForDownload = [
-                'title' => $videoInfo['title'],
-                'url' => $videoInfo['types'][$index]['url'],
-                'format' => $format
-            ];
-
-            $videoType->emit('data', [$videoInfoForDownload]);
-            $stdio->end();
-        });
     }
 
     /**
