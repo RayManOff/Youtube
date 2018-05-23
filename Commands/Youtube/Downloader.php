@@ -3,6 +3,7 @@
 namespace Commands\Youtube;
 
 use Clue\React\Stdio\Stdio;
+use Libs\Youtube\Info;
 use Libs\Youtube\YoutubeException;
 use React\EventLoop\Factory;
 use React\EventLoop\LoopInterface;
@@ -26,7 +27,6 @@ class Downloader
      * @var Client
      */
     protected $client;
-    protected $requests = [];
     protected $highQuality = false;
 
     protected $videoInfoUrlPattern = 'https://www.youtube.com/get_video_info?video_id=%s';
@@ -66,15 +66,33 @@ class Downloader
         }
 
         $this->loop = Factory::create();
-        $this->client = new Client($this->loop);
+        $info = new Info($this->loop);
 
-        $this->handle($videoIds);
+        foreach ($videoIds as $videoId) {
+            $videoInfoPromise = $info->retrieve($videoId);
+            $videoInfoPromise->done(
+                function ($data) {
+                    var_dump($data);die;
+                },
+                function ($data) {
+                    var_dump($data->getMessage());
+//                var_dump($data->getMessage());die;
+                }
+            );
+        }
+
+        $this->loop->run();
+//        $this->handle($videoIds);
     }
 
     public function handle(array $videoIds)
     {
         foreach ($videoIds as $index => $videoId) {
             $this->init($videoId, $index + 1);
+        }
+
+        foreach ($this->initRequests as $initRequest) {
+            $initRequest->end();
         }
 
         $this->loop->run();
@@ -87,6 +105,9 @@ class Downloader
         $request = $this->client->request('GET', $url);
         $request->on('response', function (\React\HttpClient\Response $response) use ($videoInfo) {
             $response->on('end', function () use ($videoInfo) {
+                foreach ($this->downloadRequests as $downloadRequest) {
+                    $downloadRequest->end();
+                }
                 $videoInfo->close();
             });
 
@@ -101,7 +122,7 @@ class Downloader
         $videoInfo->on('close', function () use (&$infoContent, $videoInfo, $position) {
             $videoInfo = $this->parseVideoInfo($infoContent);
             if ($this->highQuality) {
-                $this->download($this->getHighQualityVideo($videoInfo), $position);
+                $this->downloadRequests[] = $this->buildDownloadRequest($this->getHighQualityVideo($videoInfo), $position);
 
                 return;
             }
@@ -137,16 +158,12 @@ class Downloader
                     'format' => $format
                 ];
 
-                $this->download($videoInfoForDownload, $position);
-
-                /**
-                 * TODO if this method is called video is not downloaded
-                 */
-                $stdio->end();
+               $this->downloadRequests[] = $this->buildDownloadRequest($videoInfoForDownload, $position);
             });
         });
 
-        $request->end();
+
+        $this->initRequests[] = $request;
     }
 
     protected function getHighQualityVideo(array $videoInfo) : array
@@ -174,7 +191,7 @@ class Downloader
         return $highQualityVideo;
     }
 
-    protected function download(array $videoInfo, int $videoCount)
+    protected function buildDownloadRequest(array $videoInfo, int $videoCount)
     {
         $fileName =  $videoInfo['title'] . '.' . $videoInfo['format'];
         $filePath = sprintf($this->videoFilePattern, $fileName);
@@ -186,7 +203,7 @@ class Downloader
             $response->pipe($progress)->pipe($videoFile);
         });
 
-        $request->end();
+        return $request;
     }
 
     /**
@@ -198,10 +215,9 @@ class Downloader
     protected function makeProgressStream($size, $fileName, $position)
     {
         $currentSize = 0;
-
-        $progress = new \React\Stream\ThroughStream();
         echo "\n";
-        $progress->on('data', function($data) use ($size, &$currentSize, $fileName, $position){
+        $progress = new \React\Stream\ThroughStream();
+        $progress->on('data', function($data) use ($size, &$currentSize, $fileName, $position) {
             $currentSize += strlen($data);
             echo str_repeat("\033[1A", $position),
             "$fileName: ", number_format($currentSize / $size * 100), '%',
